@@ -10,12 +10,24 @@ from sqlalchemy.orm import relationship
 
 from .database import Base
 
+class AllowedMCP(Base):
+    __tablename__ = "allowed_mcps"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    mcp_name         = Column(String, index=True)
+    mcp_description  = Column(String)
+    mcp_tool_calls   = Column(JSONB, default=list)
+    mcp_env_keys     = Column(JSONB, default=list)
 
 class MCP(Base):
     __tablename__ = "mcps"
 
     id               = Column(Integer, primary_key=True, index=True)
-    mcp_name         = Column(String, index=True)
+    allowed_mcp_id    = Column(
+                          Integer,
+                          ForeignKey("allowed_mcps.id", ondelete="CASCADE"),
+                          index=True
+                        )
     user_address     = Column(
                          String,
                          ForeignKey("users.address", ondelete="CASCADE"),

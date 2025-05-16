@@ -13,10 +13,6 @@ class Settings(BaseSettings):
     
     # CORS configuration
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 settings = Settings()

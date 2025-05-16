@@ -344,8 +344,17 @@ class Settings(BaseSettings):
 _settings: Settings | None = None
 
 
-def get_settings(config_path: str | None = None) -> Settings:
-    """Get settings instance, automatically loading from config file if available."""
+def get_settings(config_path: str | None = None, json_config: dict | None = None) -> Settings:
+    """
+    Get settings instance, automatically loading from config file if available or using provided JSON config.
+    
+    Args:
+        config_path (str | None): Path to YAML config file
+        json_config (dict | None): JSON configuration dict to use instead of loading from file
+    
+    Returns:
+        Settings: The loaded settings
+    """
 
     def deep_merge(base: dict, update: dict) -> dict:
         """Recursively merge two dictionaries, preserving nested structures."""
@@ -358,6 +367,12 @@ def get_settings(config_path: str | None = None) -> Settings:
         return merged
 
     global _settings
+
+    # If direct JSON config is provided, create settings from it
+    if json_config is not None:
+        # We don't cache settings when direct JSON is provided to ensure 
+        # each call with different JSON gets its own config
+        return Settings(**json_config)
 
     # If we have a specific config path, always reload settings
     # This ensures each test gets its own config
