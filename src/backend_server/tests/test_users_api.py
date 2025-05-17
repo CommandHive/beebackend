@@ -47,4 +47,4 @@ def test_get_users(client):
     # Check response
     assert response.status_code == 200
     data = response.json()
-    print(data)
+    

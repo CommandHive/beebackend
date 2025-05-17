@@ -258,7 +258,157 @@ class BaseAgent(MCPAggregator, AgentProtocol):
         Returns:
             The result of the interactive session
         """
-        ...
+        from mcp_agent.core.interactive_prompt import InteractivePrompt
+        
+        # Use the agent name as a string - ensure it's not the object itself
+        agent_name_str = str(self.name)
+        
+        # Create agent_types dictionary with just this agent
+        agent_types = {agent_name_str: self.agent_type.value}
+        
+        # Create the interactive prompt
+        prompt = InteractivePrompt(agent_types=agent_types)
+        
+        # Check if Redis PubSub is enabled in the config
+        pubsub_enabled = False
+        redis_client = None
+        channel_name = None
+        
+        if (
+            self._context 
+            and hasattr(self._context, "config") 
+            and hasattr(self._context.config, "pubsub_enabled")
+            and self._context.config.pubsub_enabled
+        ):
+            pubsub_enabled = True
+            try:
+                # Import Redis module
+                import redis.asyncio as aioredis
+                
+                # Get Redis configuration
+                redis_config = getattr(self._context.config, "pubsub_config", {})
+                self.logger.info(f"Redis config: {redis_config}")
+                if isinstance(redis_config, dict) and redis_config.get("use_redis", False):
+                    redis_params = redis_config.get("redis", {})
+                    # Extract channel name - default to agent name if not specified
+                    channel_name = redis_config.get("channel_name", self.name)
+                    channel_prefix = redis_params.get("channel_prefix", "agent:")
+                    # Combine prefix and channel name
+                    full_channel_name = f"{channel_prefix}{channel_name}"
+                    self.logger.info(f"Using Redis channel: {full_channel_name}")
+                    # Create Redis client
+                    redis_client = aioredis.Redis(
+                        host=redis_params.get("host", "localhost"),
+                        port=redis_params.get("port", 6379),
+                        db=redis_params.get("db", 0),
+                        decode_responses=True
+                    )
+                    
+                    # Set up separate Redis listener for direct message processing
+                    redis_pubsub = redis_client.pubsub()
+                    await redis_pubsub.subscribe(full_channel_name)
+                    
+                    # Start background task to process messages directly
+                    async def process_redis_messages():
+                        import json
+                        self.logger.info(f"Starting direct Redis message processing on channel: {full_channel_name}")
+                        try:
+                            while True:
+                                message = await redis_pubsub.get_message(ignore_subscribe_messages=True)
+                                if message and message.get('type') == 'message':
+                                    try:
+                                        # Process the message data
+                                        data = message.get('data')
+                                        if isinstance(data, bytes):
+                                            data = data.decode('utf-8')
+                                        
+                                        # Try to parse JSON
+                                        try:
+                                            data_obj = json.loads(data)
+                                            self.logger.info(f"Received message from Redis: {data_obj}")
+                                            # If this is a user message, extract content and send to agent
+                                            if data_obj.get('type') == 'user' and 'content' in data_obj:
+                                                user_input = data_obj['content']
+                                                self.logger.info(f"Processing user input from Redis: {user_input}")
+                                                
+                                                # Send the message to self and get response
+                                                response = await self.send(user_input)
+                                                self.logger.info(f"Agent response: {response}")
+                                                
+                                                # Optionally publish response back to a response channel
+                                                # response_channel = f"{channel_prefix}{channel_name}_response"
+                                                # response_data = {
+                                                #     "type": "assistant",
+                                                #     "content": response,
+                                                #     "channel_id": channel_name,
+                                                #     "metadata": {"source": self.name}
+                                                # }
+                                                # await redis_client.publish(response_channel, json.dumps(response_data))
+                                        except json.JSONDecodeError:
+                                            self.logger.warning(f"Received non-JSON message from Redis: {data}")
+                                    except Exception as e:
+                                        self.logger.error(f"Error processing Redis message: {e}")
+                                        import traceback
+                                        self.logger.error(traceback.format_exc())
+                                
+                                # Small delay to prevent CPU spike
+                                await asyncio.sleep(0.01)
+                        except asyncio.CancelledError:
+                            self.logger.info("Redis direct processor was cancelled")
+                            await redis_pubsub.unsubscribe(full_channel_name)
+                            raise
+                        except Exception as e:
+                            self.logger.error(f"Error in Redis direct processor: {e}")
+                            import traceback
+                            self.logger.error(traceback.format_exc())
+                    
+                    # Start the direct message processor
+                    asyncio.create_task(process_redis_messages())
+                    
+                    # Also set up Redis input handler for the prompt interface
+                    await prompt.set_redis_input_handler(redis_client, full_channel_name)
+                    self.logger.info(f"PubSub input enabled on channel: {full_channel_name}")
+            except ImportError:
+                self.logger.warning("Redis package not found. Install with: pip install redis")
+            except Exception as e:
+                self.logger.error(f"Error setting up Redis PubSub: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+        
+        # Define wrapper for send function
+        async def send_wrapper(message, agent_name):
+            return await self.send(message)
+        
+        # Define wrapper for apply_prompt function
+        async def apply_prompt_wrapper(prompt_name, args, agent_name):
+            # Just apply the prompt directly
+            return await self.apply_prompt(prompt_name, args)
+        
+        # Define wrapper for list_prompts function
+        async def list_prompts_wrapper(agent_name):
+            # Always call list_prompts on this agent regardless of agent_name
+            return await self.list_prompts()
+        
+        # Define wrapper for list_resources function
+        async def list_resources_wrapper(agent_name):
+            # Always call list_resources on this agent regardless of agent_name
+            return await self.list_resources()
+        
+        try:
+            # Start the prompt loop with just this agent - use Redis-only mode
+            return await prompt.prompt_loop(
+                send_func=send_wrapper,
+                default_agent=agent_name_str,
+                available_agents=[agent_name_str],  # Only this agent
+                apply_prompt_func=apply_prompt_wrapper,
+                list_prompts_func=list_prompts_wrapper,
+                default=default_prompt,
+                use_terminal_input=False,  # Disable terminal input to use only Redis
+            )
+        finally:
+            # Clean up Redis client if needed
+            if redis_client:
+                await redis_client.close()
 
     async def request_human_input(self, request: HumanInputRequest) -> str:
         """

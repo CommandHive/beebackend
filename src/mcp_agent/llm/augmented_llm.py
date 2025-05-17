@@ -45,6 +45,7 @@ from mcp_agent.mcp.mcp_aggregator import MCPAggregator
 from mcp_agent.mcp.prompt_message_multipart import PromptMessageMultipart
 from mcp_agent.mcp.prompt_render import render_multipart_message
 from mcp_agent.ui.console_display import ConsoleDisplay
+from mcp_agent.ui.pubsub_display import PubSubDisplay
 
 # Define type variables locally
 MessageParamT = TypeVar("MessageParamT")
@@ -152,8 +153,34 @@ class AugmentedLLM(ContextDependent, AugmentedLLMProtocol, Generic[MessageParamT
 
         self._message_history: List[PromptMessageMultipart] = []
 
+        # Determine if PubSub is enabled
+        self.pubsub_enabled = False
+        channel_id = None
+        
+        if self.context and hasattr(self.context, "config"):
+            self.pubsub_enabled = getattr(self.context.config, "pubsub_enabled", False)
+            
+            # Check for channel name in pubsub config
+            if hasattr(self.context.config, "pubsub_config"):
+                pubsub_config = getattr(self.context.config, "pubsub_config", {})
+                if "channel_name" in pubsub_config:
+                    channel_id = f"agent_{pubsub_config['channel_name']}"
+        
+        # Use agent name as fallback channel ID if not specified in config
+        if self.pubsub_enabled and not channel_id and self.name:
+            channel_id = f"agent_{self.name}"
+
         # Initialize the display component
-        self.display = ConsoleDisplay(config=self.context.config)
+        if self.pubsub_enabled and channel_id:
+            self.logger.debug(f"Initializing PubSubDisplay with channel: {channel_id}")
+            self.display = PubSubDisplay(config=self.context.config, channel_id=channel_id)
+        else:
+            self.display = ConsoleDisplay(config=self.context.config)
+            
+        # Ensure display is never None to avoid "object NoneType can't be used in 'await' expression" errors
+        if self.display is None:
+            self.logger.warning(f"Display initialization failed, falling back to ConsoleDisplay")
+            self.display = ConsoleDisplay(config=self.context.config)
 
         # Initialize default parameters
         self.default_request_params = self._initialize_default_params(kwargs)
@@ -202,12 +229,12 @@ class AugmentedLLM(ContextDependent, AugmentedLLMProtocol, Generic[MessageParamT
                 parts[1].strip() if len(parts) > 1 else f"{self.name or 'assistant'}_prompts.txt"
             )
             await self._save_history(filename)
-            self.show_user_message(
+            await self.show_user_message(
                 f"History saved to {filename}", model=self.default_request_params.model, chat_turn=0
             )
             return Prompt.assistant(f"History saved to {filename}")
 
-        self._precall(multipart_messages)
+        await self._precall(multipart_messages)
 
         assistant_response: PromptMessageMultipart = await self._apply_prompt_provider_specific(
             multipart_messages, request_params
@@ -246,7 +273,7 @@ class AugmentedLLM(ContextDependent, AugmentedLLMProtocol, Generic[MessageParamT
     ) -> Tuple[ModelT | None, PromptMessageMultipart]:
         """Return a structured response from the LLM using the provided messages."""
 
-        self._precall(multipart_messages)
+        await self._precall(multipart_messages)
         result, assistant_response = await self._apply_prompt_provider_specific_structured(
             multipart_messages, model, request_params
         )
@@ -327,11 +354,11 @@ class AugmentedLLM(ContextDependent, AugmentedLLMProtocol, Generic[MessageParamT
             logger.warning(f"Failed to parse structured response: {str(e)}")
             return None, message
 
-    def _precall(self, multipart_messages: List[PromptMessageMultipart]) -> None:
+    async def _precall(self, multipart_messages: List[PromptMessageMultipart]) -> None:
         """Pre-call hook to modify the message before sending it to the provider."""
         self._message_history.extend(multipart_messages)
         if multipart_messages[-1].role == "user":
-            self.show_user_message(
+            await self.show_user_message(
                 render_multipart_message(multipart_messages[-1]),
                 model=self.default_request_params.model,
                 chat_turn=self.chat_turn(),
@@ -415,17 +442,17 @@ class AugmentedLLM(ContextDependent, AugmentedLLMProtocol, Generic[MessageParamT
         # Many LLM implementations will allow the same type for input and output messages
         return cast("MessageParamT", message)
 
-    def show_tool_result(self, result: CallToolResult) -> None:
+    async def show_tool_result(self, result: CallToolResult) -> None:
         """Display a tool result in a formatted panel."""
-        self.display.show_tool_result(result)
+        await self.display.show_tool_result(result)
 
-    def show_oai_tool_result(self, result: str) -> None:
+    async def show_oai_tool_result(self, result: str) -> None:
         """Display a tool result in a formatted panel."""
-        self.display.show_oai_tool_result(result)
+        await self.display.show_oai_tool_result(result)
 
-    def show_tool_call(self, available_tools, tool_name, tool_args) -> None:
+    async def show_tool_call(self, available_tools, tool_name, tool_args) -> None:
         """Display a tool call in a formatted panel."""
-        self.display.show_tool_call(available_tools, tool_name, tool_args)
+        await self.display.show_tool_call(available_tools, tool_name, tool_args)
 
     async def show_assistant_message(
         self,
@@ -444,9 +471,9 @@ class AugmentedLLM(ContextDependent, AugmentedLLMProtocol, Generic[MessageParamT
             name=self.name,
         )
 
-    def show_user_message(self, message, model: str | None, chat_turn: int) -> None:
+    async def show_user_message(self, message, model: str | None, chat_turn: int) -> None:
         """Display a user message in a formatted panel."""
-        self.display.show_user_message(message, model, chat_turn, name=self.name)
+        await self.display.show_user_message(message, model, chat_turn, name=self.name)
 
     async def pre_tool_call(
         self, tool_call_id: str | None, request: CallToolRequest

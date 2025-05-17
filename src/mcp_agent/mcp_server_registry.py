@@ -66,28 +66,52 @@ class ServerRegistry:
         self, 
         config: Settings | None = None, 
         config_path: str | None = None,
-        user_id: str | None = None
+        json_config: dict | None = None
     ) -> None:
         """
-        Initialize the ServerRegistry with configuration.
+        Initialize the ServerRegistry with a configuration.
 
         Args:
             config (Settings): The Settings object containing the server configurations.
             config_path (str): Path to the YAML configuration file.
-            user_id (str): User ID to load configurations from database.
+            json_config (dict): JSON configuration dictionary for MCP servers.
         """
-        if user_id is not None:
-            # If user_id is provided, load from database
-            self.registry = self.load_registry_from_db(user_id)
-        elif config is not None:
-            # If config object is provided, use it
-            self.registry = config.mcp.servers
+        if json_config is not None:
+            # Create MCP server settings from JSON directly
+            self.registry = self._create_registry_from_json(json_config)
         else:
-            # Otherwise load from file
-            self.registry = self.load_registry_from_file(config_path)
+            self.registry = (
+                self.load_registry_from_file(config_path) if config is None else config.mcp.servers
+            )
         
         self.init_hooks: Dict[str, InitHookCallable] = {}
         self.connection_manager = MCPConnectionManager(self)
+
+    def _create_registry_from_json(self, json_config: dict) -> Dict[str, MCPServerSettings]:
+        """
+        Create server registry from JSON configuration dictionary.
+
+        Args:
+            json_config (dict): JSON configuration dictionary for MCP servers.
+                Expected format: {"server_name": {server_config}, ...}
+
+        Returns:
+            Dict[str, MCPServerSettings]: A dictionary of server configurations.
+        """
+        server_registry: Dict[str, MCPServerSettings] = {}
+        
+        for server_name, server_config in json_config.items():
+            if not isinstance(server_config, dict):
+                logger.warning(f"Invalid server configuration for {server_name}: {server_config}")
+                continue
+                
+            try:
+                # Create server settings from config
+                server_registry[server_name] = MCPServerSettings(**server_config)
+            except Exception as e:
+                logger.warning(f"Error creating server settings for {server_name}: {e}")
+                
+        return server_registry
 
     def load_registry_from_file(
         self, config_path: str | None = None
@@ -103,38 +127,6 @@ class ServerRegistry:
         """
 
         servers = get_settings(config_path).mcp.servers or {}
-        return servers
-        
-    def load_registry_from_db(
-        self, user_id: str
-    ) -> Dict[str, MCPServerSettings]:
-        """
-        Load server configurations from the database for a specific user.
-
-        Args:
-            user_id (str): The ID of the user to load configurations for.
-
-        Returns:
-            Dict[str, MCPServerSettings]: A dictionary of server configurations.
-
-        Raises:
-            ValueError: If the configuration cannot be loaded or is invalid.
-        """
-        # This is where you'd implement the database query logic
-        # For example, using an ORM or a database client to fetch the configuration
-        # associated with the given user_id
-        
-        # Example implementation (to be replaced with actual DB query):
-        logger.info(f"Loading server configurations from database for user: {user_id}")
-        
-        # TODO: Replace with actual database query logic
-        # Example: server_configs = fetch_from_database(user_id)
-        
-        # Convert database results to MCPServerSettings dictionary
-        # This is a placeholder - you'll need to implement the actual conversion logic
-        servers = {}
-        
-        # Return the loaded configurations
         return servers
 
     @asynccontextmanager
