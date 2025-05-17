@@ -7,7 +7,7 @@ def main():
 
     # Create a PubSub object and subscribe to the channel
     pubsub = r.pubsub()
-    channel_name = 'agent:agent_agent_queen_agent'
+    channel_name = 'agent:queen'
     pubsub.subscribe(channel_name)
     print(f"Subscribed to channel: {channel_name}")
 

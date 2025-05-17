@@ -19,6 +19,7 @@ from mcp_agent.logging.listeners import (
     LoggingListener,
     ProgressListener,
 )
+from mcp_agent.logging.redis_listener import RedisLoggerListener
 from mcp_agent.logging.transport import AsyncEventBus, EventTransport
 
 
@@ -202,6 +203,11 @@ class LoggingConfig:
             batch_size: Default batch size for batching listener
             flush_interval: Default flush interval for batching listener
             **kwargs: Additional configuration options
+                pubsub_enabled: Whether to enable Redis-based PubSub for logs
+                pubsub_config: Redis configuration for PubSub
+                    channel_name: Name of the Redis channel for logs
+                    use_redis: Whether to use Redis for PubSub
+                    redis: Redis connection configuration
         """
         if cls._initialized:
             return
@@ -223,6 +229,30 @@ class LoggingConfig:
                     event_filter=event_filter,
                     batch_size=batch_size,
                     flush_interval=flush_interval,
+                ),
+            )
+            
+        # Add Redis PubSub listener if enabled and available
+        pubsub_enabled = kwargs.get("pubsub_enabled", False)
+        print("pubsub_enabled")
+        print(pubsub_enabled)
+        print(RedisLoggerListener)
+        print(bus.listeners)
+        if pubsub_enabled and RedisLoggerListener is not None and "redis_pubsub" not in bus.listeners:
+            print(bus.listeners)
+            pubsub_config = kwargs.get("pubsub_config", {})
+            channel_name = pubsub_config.get("channel_name", "logs")
+            use_redis = pubsub_config.get("use_redis", True)
+            redis_config = pubsub_config.get("redis", None)
+            
+            print(pubsub_config)
+            bus.add_listener(
+                "redis_pubsub",
+                RedisLoggerListener(
+                    channel_name=channel_name,
+                    event_filter=event_filter,
+                    use_redis=use_redis,
+                    redis_config=redis_config,
                 ),
             )
 

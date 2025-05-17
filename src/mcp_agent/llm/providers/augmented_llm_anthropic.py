@@ -271,7 +271,7 @@ class AnthropicAugmentedLLM(AugmentedLLM[MessageParam, Message]):
                         result = await self.call_tool(
                             request=tool_call_request, tool_call_id=tool_use_id
                         )
-                        self.show_tool_result(result)
+                        await self.show_tool_result(result)
 
                         # Add each result to our collection
                         tool_results.append((tool_use_id, result))
