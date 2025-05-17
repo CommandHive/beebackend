@@ -94,7 +94,7 @@ class FastAgent:
                             (like FastAPI/Uvicorn) that handles its own arguments.
         """
         self.args = argparse.Namespace()  # Initialize args always
-
+        print("fastagent initialistaion happening!!!")
         # --- Wrap argument parsing logic ---
         if parse_cli_args:
             # Setup command line argument parsing
@@ -178,9 +178,19 @@ class FastAgent:
         try:
             # Load configuration directly for this instance
             self._load_config()
-
-            # Create the app with our local settings
+            
+            # Extract pubsub configuration for logging system
+            self.pubsub_enabled = False
+            self.pubsub_config = None
+            
             if hasattr(self, "json_config") and self.json_config is not None:
+                # Check for pubsub configuration in JSON config
+                self.pubsub_enabled = self.json_config.get("pubsub_enabled", False)
+                self.pubsub_config = self.json_config.get("pubsub_config", None)
+                
+                # We'll configure logging later during agent initialization
+                # when we have a running event loop
+                
                 # Pass the original JSON config to MCPApp to avoid duplicate conversion
                 self.app = MCPApp(
                     name=name,
@@ -268,6 +278,17 @@ class FastAgent:
         """
         active_agents: Dict[str, Agent] = {}
         had_error = False
+        
+        # Configure the logging system with Redis PubSub if enabled
+        if hasattr(self, "pubsub_enabled") and self.pubsub_enabled and hasattr(self, "pubsub_config"):
+            from mcp_agent.logging.logger import LoggingConfig
+            
+            # Now we have a running event loop, configure logging
+            await LoggingConfig.configure(
+                pubsub_enabled=self.pubsub_enabled,
+                pubsub_config=self.pubsub_config
+            )
+            
         await self.app.initialize()
 
         # Handle quiet mode and CLI model override safely

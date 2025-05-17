@@ -7,9 +7,15 @@ import asyncio
 import json
 from typing import Dict
 from rich import print as rich_print
-
+import os
 from mcp_agent.core.fastagent import FastAgent
-
+from dotenv import load_dotenv
+load_dotenv()
+import redis.asyncio as aioredis
+'''
+ redis-cli PUBLISH agent:queen '{"type": "user", "content": "ai agents fetch wikipedia page", "channel_id": "agent:queen",
+  "metadata": {"model": "claude-3-5-haiku-latest", "name": "default"}}'
+'''
 # Sample JSON config for MCP
 sample_json_config = {
     "mcp": {
@@ -19,7 +25,13 @@ sample_json_config = {
                 "description": "A server for fetching links",
                 "transport": "stdio",
                 "command": "uvx",
-                "args": ["mcp-server-fetch"]
+                "args": ["mcp-server-fetch"],
+                "tool_calls":[
+                    {
+                        "name": "fetch-fetch",
+                        "seek_confirm": True
+                    }
+                ]
             }
         }
     },
@@ -31,7 +43,7 @@ sample_json_config = {
     "pubsub_enabled": True,
     "pubsub_config": {
         "use_redis": True,
-        "channel_name": "agent_queen_agent",  # This must match the agent name or channel used for publishing
+        "channel_name": "queen",  # This must match the agent name or channel used for publishing
         "redis": {
             "host": "localhost",
             "port": 6379,
@@ -40,17 +52,22 @@ sample_json_config = {
         }
     },
     "anthropic": {
-          "api_key": ""
+          "api_key": os.environ.get("CALUDE_API_KEY", "")
       }
 }
 
 
 fast = FastAgent(
-        name="agent_queen_agent",  # Changed name to match channel name used in publishing
+        name="queen",  # Changed name to match channel name used in publishing
         json_config=sample_json_config,
         parse_cli_args=False
     )
-
+redis_client = aioredis.Redis(
+            host="localhost",
+            port=6379,
+            db=0,
+            decode_responses=True
+        )
 @fast.agent(instruction="You are a helpful AI Agent", servers=["fetch"])
 async def main():
     """Test initializing FastAgent with JSON config in interactive mode."""
@@ -60,28 +77,12 @@ async def main():
     # parse_cli_args=False to ensure we don't try to parse command line args in test mode
     
     # Register a simple agent and keep it running
-    async with fast.run() as agent:
-        rich_print("[bold green]Agent running in Redis-only mode![/bold green]")
-        rich_print(f"Waiting for messages on Redis channel: [cyan]agent:agent_queen_agent[/cyan]")
-        rich_print(f"Responses will be published to channel: [cyan]agent:agent_queen_agent_response[/cyan]")
-        rich_print("[bold]Press Ctrl+C to stop the agent...[/bold]")
-        
-        # Create a simple pubsub client for direct listening
-        import redis.asyncio as aioredis
-        import json
-        
-        # Create Redis client
-        redis_client = aioredis.Redis(
-            host="localhost",
-            port=6379,
-            db=0,
-            decode_responses=True
-        )
+    async with fast.run() as agent:        
         
         try:
             # Subscribe to the input channel
             pubsub = redis_client.pubsub()
-            await pubsub.subscribe("agent:agent_queen_agent")
+            await pubsub.subscribe("agent:queen")
             
             # Keep running until interrupted
             while True:
@@ -97,35 +98,15 @@ async def main():
                         # Try to parse JSON
                         try:
                             data_obj = json.loads(data)
-                            rich_print(f"[blue]Received message:[/blue] {data_obj}")
                             
                             # If this is a user message, extract content and send to agent
                             if data_obj.get('type') == 'user' and 'content' in data_obj:
                                 user_input = data_obj['content']
                                 rich_print(f"[yellow]Processing user input:[/yellow] {user_input}")
-                                
                                 # Send the message to the agent
                                 response = await agent.send(user_input)
                                 rich_print(f"[green]Agent response:[/green] {response}")
                                 
-                                # Publish response back to response channel
-                                response_channel = "agent:agent_queen_agent_response"
-                                # Get metadata from the original message
-                                metadata = data_obj.get('metadata', {})
-                                if not isinstance(metadata, dict):
-                                    metadata = {}
-                                    
-                                # Add our metadata
-                                metadata["source"] = "agent_queen_agent"
-                                
-                                response_data = {
-                                    "type": "assistant",
-                                    "content": response,
-                                    "channel_id": data_obj.get('channel_id', 'agent_queen_agent'),
-                                    "metadata": metadata
-                                }
-                                await redis_client.publish(response_channel, json.dumps(response_data))
-                                rich_print(f"[blue]Published response to[/blue] [cyan]{response_channel}[/cyan]")
                         except json.JSONDecodeError:
                             rich_print(f"[red]Received non-JSON message:[/red] {data}")
                     except Exception as e:
@@ -134,7 +115,7 @@ async def main():
                         rich_print(f"[dim red]{traceback.format_exc()}[/dim red]")
                 
                 # Small delay to prevent CPU spike
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.05)
                 
         except asyncio.CancelledError:
             rich_print("[yellow]Agent was cancelled[/yellow]")

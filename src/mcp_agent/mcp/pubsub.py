@@ -4,14 +4,9 @@ import json
 import importlib.util
 import sys
 
-from mcp_agent.logging.logger import get_logger
-
-logger = get_logger(__name__)
 
 # Check if Redis is available
 REDIS_AVAILABLE = importlib.util.find_spec("redis") is not None
-if not REDIS_AVAILABLE:
-    logger.warning("Redis package not found. To use Redis-based PubSub, install redis-py: pip install redis")
 
 
 class PubSubChannel:
@@ -33,7 +28,6 @@ class PubSubChannel:
         self._async_subscribers: Set[Callable[[Any], Coroutine[Any, Any, None]]] = set()
         self.history: List[Any] = []
         self.max_history_length = 100
-        logger.debug(f"Created PubSub channel: {channel_id}")
 
     def subscribe(self, callback: Callable[[Any], None]) -> None:
         """
@@ -42,9 +36,7 @@ class PubSubChannel:
         Args:
             callback: Function to be called when a message is published
         """
-        logger.debug(f"[subscribe] Adding sync subscriber: {callback!r}, type={type(callback)}")
         self._subscribers.add(callback)
-        logger.debug(f"Added sync subscriber to channel: {self.channel_id}")
 
     def unsubscribe(self, callback: Callable[[Any], None]) -> None:
         """
@@ -53,9 +45,7 @@ class PubSubChannel:
         Args:
             callback: The callback function to remove
         """
-        logger.debug(f"[unsubscribe] Removing sync subscriber: {callback!r}")
         self._subscribers.discard(callback)
-        logger.debug(f"Removed sync subscriber from channel: {self.channel_id}")
 
     def subscribe_async(self, callback: Callable[[Any], Coroutine[Any, Any, None]]) -> None:
         """
@@ -64,9 +54,7 @@ class PubSubChannel:
         Args:
             callback: Coroutine to be called when a message is published
         """
-        logger.debug(f"[subscribe_async] Adding async subscriber: {callback!r}, type={type(callback)}")
         self._async_subscribers.add(callback)
-        logger.debug(f"Added async subscriber to channel: {self.channel_id}")
 
     def unsubscribe_async(self, callback: Callable[[Any], Coroutine[Any, Any, None]]) -> None:
         """
@@ -75,9 +63,7 @@ class PubSubChannel:
         Args:
             callback: The coroutine to remove
         """
-        logger.debug(f"[unsubscribe_async] Removing async subscriber: {callback!r}")
         self._async_subscribers.discard(callback)
-        logger.debug(f"Removed async subscriber from channel: {self.channel_id}")
 
     async def publish(self, message: Any) -> None:
         """
@@ -91,25 +77,21 @@ class PubSubChannel:
         if len(self.history) > self.max_history_length:
             self.history = self.history[-self.max_history_length:]
         
-        logger.debug(f"[publish] channel={self.channel_id} | message={message!r}")
-        logger.debug(f"[publish] sync_subs={list(self._subscribers)}")
-        logger.debug(f"[publish] async_subs={list(self._async_subscribers)}")
 
         # Call synchronous subscribers
         for subscriber in list(self._subscribers):
             try:
                 subscriber(message)
             except Exception as e:
-                logger.error(f"Error in sync subscriber: {e}")
+                pass
         
         # Call asynchronous subscribers
         for subscriber in list(self._async_subscribers):
             try:
                 await subscriber(message)
             except Exception as e:
-                logger.error(f"Error in async subscriber: {e}")
+                pass
 
-        logger.debug(f"Published message to channel: {self.channel_id}")
 
 
 class RedisPubSubChannel(PubSubChannel):
@@ -140,12 +122,8 @@ class RedisPubSubChannel(PubSubChannel):
         """Wait for subscription to be ready before proceeding."""
         try:
             await setup_task
-            logger.debug(f"Redis subscription setup completed for channel: {self.redis_channel}")
         except Exception as e:
-            logger.error(f"Error setting up Redis subscription: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
+            pass            
     def _setup_redis_listener(self) -> None:
         """Set up Redis subscription and message listener."""
         if not self.redis_client:
@@ -153,10 +131,8 @@ class RedisPubSubChannel(PubSubChannel):
             
         # For asyncio Redis, we need to await the subscribe operation
         async def setup_subscription():
-            logger.debug(f"Setting up Redis subscription for channel: {self.redis_channel}")
             self._pubsub = self.redis_client.pubsub()
             await self._pubsub.subscribe(self.redis_channel)
-            logger.debug(f"Successfully subscribed to Redis channel: {self.redis_channel}")
         
         # Initialize subscription and wait for it to complete before continuing
         setup_task = asyncio.create_task(setup_subscription())
@@ -176,13 +152,10 @@ class RedisPubSubChannel(PubSubChannel):
                   not getattr(channel_instance._pubsub, 'subscribed', False)):
                 retry_count += 1
                 if retry_count > max_retries:
-                    logger.error(f"Failed to initialize pubsub after {max_retries} retries")
                     return
                     
-                logger.debug("Waiting for pubsub to be fully initialized...")
                 await asyncio.sleep(0.5)  # Longer sleep to give more time
                 
-            logger.debug(f"Starting Redis listener loop for channel: {channel_instance.redis_channel}")
             
             while True:
                 try:
@@ -190,37 +163,28 @@ class RedisPubSubChannel(PubSubChannel):
                     # Only log at debug level every 100 iterations to reduce noise
                     message = await channel_instance._pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
                     
-                    if message:
-                        logger.debug(f"Received message from Redis: {message}")
                         
                     if message and message.get('type') == 'message':
                         data = message.get('data')
                         if isinstance(data, bytes):
                             data = data.decode('utf-8')
                         
-                        logger.debug(f"Decoded message data: {data[:100]}...")
                         
                         # Try to parse JSON, fall back to raw data if not JSON
                         try:
                             data = json.loads(data)
-                            logger.debug("Successfully parsed JSON data")
                         except json.JSONDecodeError:
-                            logger.debug("Could not parse as JSON, using raw data")
                             pass
                             
                         # Call PubSubChannel's publish method to notify local subscribers
                         # Instead of using super() which doesn't work in nested functions
-                        logger.debug("Publishing data to local subscribers")
                         await PubSubChannel.publish(channel_instance, data)
                 except Exception as e:
-                    logger.error(f"Error in Redis listener: {e}")
                     import traceback
-                    logger.error(traceback.format_exc())
                     
                 await asyncio.sleep(0.01)  # Small delay to prevent CPU spike
                 
         self._listener_task = asyncio.create_task(listener_loop())
-        logger.debug(f"Started Redis listener for channel: {self.redis_channel}")
     
     async def publish(self, message: Any) -> None:
         """
@@ -243,17 +207,11 @@ class RedisPubSubChannel(PubSubChannel):
                 else:
                     message_data = str(message)
                 
-                # Log the message we're about to publish
-                logger.debug(f"Publishing message to Redis channel {self.redis_channel}: {message_data[:100]}...")
                     
                 # For asyncio Redis, publish is a coroutine and must be awaited
                 await self.redis_client.publish(self.redis_channel, message_data)
-                logger.debug(f"Successfully published message to Redis channel: {self.redis_channel}")
             except Exception as e:
-                logger.error(f"Error publishing to Redis: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-
+                pass
 
 class PubSubManager:
     """
@@ -294,18 +252,15 @@ class PubSubManager:
                     redis_params.update(redis_config)
                     
                 self.redis_client = aioredis.Redis(**redis_params)
-                logger.info(f"Initialized Redis PubSub client: {redis_params['host']}:{redis_params['port']}")
             except ImportError:
-                logger.error("Could not import Redis. Install with: pip install redis")
                 self.use_redis = False
             except Exception as e:
-                logger.error(f"Error initializing Redis client: {e}")
                 self.use_redis = False
         
         log_message = "Initialized PubSubManager"
         if self.use_redis:
             log_message += " with Redis backend"
-        logger.debug(log_message)
+        print(log_message)
 
     def get_or_create_channel(self, channel_id: str) -> Union[PubSubChannel, RedisPubSubChannel]:
         """
@@ -327,7 +282,6 @@ class PubSubManager:
             else:
                 self._channels[channel_id] = PubSubChannel(channel_id)
                 
-            logger.info(f"Created new channel: {channel_id}")
         return self._channels[channel_id]
 
     def get_channel(self, channel_id: str) -> Optional[Union[PubSubChannel, RedisPubSubChannel]]:
@@ -351,7 +305,6 @@ class PubSubManager:
         """
         if channel_id in self._channels:
             del self._channels[channel_id]
-            logger.info(f"Removed channel: {channel_id}")
 
     def list_channels(self) -> List[str]:
         """
