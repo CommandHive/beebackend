@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import health, users
+from .routers import health, users, mcp
 from .config import settings
 
 app = FastAPI(
@@ -22,6 +22,7 @@ app.add_middleware(
 # Include routers
 app.include_router(health.router)
 app.include_router(users.router)
+app.include_router(mcp.router)
 
 @app.get("/")
 async def root():

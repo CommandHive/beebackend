@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Dict, Optional, Type, TypeVar
+from typing import TYPE_CHECKING, Dict, Optional, Type, TypeVar, Union
 
 from mcp_agent.config import Settings
 from mcp_agent.context import Context, cleanup_context, initialize_context
@@ -40,7 +40,7 @@ class MCPApp:
     def __init__(
         self,
         name: str = "mcp_application",
-        settings: Optional[Settings] | str = None,
+        settings: Optional[Union[Settings, str, dict]] = None,
         human_input_callback: Optional[HumanInputCallback] = console_input_callback,
         signal_notification: Optional[SignalWaitCallback] = None,
         upstream_session: Optional["ServerSession"] = None,
@@ -49,8 +49,11 @@ class MCPApp:
         Initialize the application with a name and optional settings.
         Args:
             name: Name of the application
-            settings: Application configuration - If unspecified, the settings are loaded from mcp_agent.config.yaml.
-                If this is a string, it is treated as the path to the config file to load.
+            settings: Application configuration - Can be one of:
+                - None: Load from default config file
+                - str: Path to config file
+                - dict: JSON configuration dictionary
+                - Settings: Already initialized Settings object
             human_input_callback: Callback for handling human input
             signal_notification: Callback for getting notified on workflow signals/events.
             upstream_session: Optional upstream session if the MCPApp is running as a server to an MCP client.
@@ -114,21 +117,13 @@ class MCPApp:
             self._logger = get_logger(f"mcp_agent.{self.name}")
         return self._logger
 
-    async def initialize(self, user_id: Optional[str] = None) -> None:
-        """
-        Initialize the application.
-        
-        Args:
-            user_id: Optional user ID to fetch server configurations from database
-        """
+    async def initialize(self) -> None:
+        """Initialize the application."""
         if self._initialized:
             return
-            
-        # Pass the user_id to initialize_context if provided
-        self._context = await initialize_context(
-            config=self._config_or_path, 
-            user_id=user_id
-        )
+
+        # Initialize the context with the provided config (which could be a dict/JSON)
+        self._context = await initialize_context(self._config_or_path)
 
         # Set the properties that were passed in the constructor
         self._context.human_input_handler = self._human_input_callback
@@ -142,7 +137,6 @@ class MCPApp:
                 "progress_action": "Running",
                 "target": self.name or "mcp_application",
                 "agent_name": self.name or "fastagent loop",
-                "user_id": user_id,  # Include user_id in the log for traceability
             },
         )
 
@@ -169,19 +163,16 @@ class MCPApp:
         self._initialized = False
 
     @asynccontextmanager
-    async def run(self, user_id: Optional[str] = None):
+    async def run(self):
         """
         Run the application. Use as context manager.
 
-        Args:
-            user_id: Optional user ID to fetch server configurations from database
-
         Example:
-            async with app.run(user_id="user123") as running_app:
-                # App is initialized here with user-specific configurations
+            async with app.run() as running_app:
+                # App is initialized here
                 pass
         """
-        await self.initialize(user_id=user_id)
+        await self.initialize()
         try:
             yield self
         finally:
