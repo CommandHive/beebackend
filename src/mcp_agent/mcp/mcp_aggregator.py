@@ -1,4 +1,4 @@
-from asyncio import Lock, gather
+from asyncio import Lock, gather, create_task, wait_for, TimeoutError
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -29,6 +29,7 @@ from mcp_agent.mcp.common import SEP, create_namespaced_name, is_namespaced_name
 from mcp_agent.mcp.gen_client import gen_client
 from mcp_agent.mcp.mcp_agent_client_session import MCPAgentClientSession
 from mcp_agent.mcp.mcp_connection_manager import MCPConnectionManager
+from mcp_agent.mcp.pubsub import get_pubsub_manager
 
 if TYPE_CHECKING:
     from mcp_agent.context import Context
@@ -93,6 +94,233 @@ class MCPAggregator(ContextDependent):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+        
+    def _get_tool_config(self, server_name: str, tool_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the configuration for a specific tool from the server config.
+        
+        Args:
+            server_name: Name of the server 
+            tool_name: Name of the tool
+            
+        Returns:
+            Tool configuration dictionary or None if not found
+        """
+        if not hasattr(self.context, "config") or not hasattr(self.context.config, "mcp"):
+            return None
+            
+        mcp_config = self.context.config.mcp
+        
+        # Get server configuration
+        servers_config = getattr(mcp_config, "servers", {})
+        if not servers_config:
+            return None
+            
+        # Get specific server config
+        server_config = getattr(servers_config, server_name, None)
+        if not server_config:
+            return None
+            
+        # Look for tool_calls configuration
+        tool_calls = getattr(server_config, "tool_calls", [])
+        if not tool_calls:
+            return None
+            
+        # Find matching tool configuration
+        for tool_config in tool_calls:
+            if getattr(tool_config, "name", None) == tool_name:
+                return tool_config
+                
+        return None
+        
+    async def _get_pubsub_channel(self, channel_name=None):
+        """
+        Get the PubSub channel for tool confirmation.
+        
+        Args:
+            channel_name: Optional channel name override
+            
+        Returns:
+            Tuple of (channel, channel_name) or (None, None) if PubSub not available
+        """
+        # Check if PubSub is enabled
+        if not hasattr(self.context, "config") or not self.context.config.get("pubsub_enabled", False):
+            return None, None
+            
+        
+        # Get configuration
+        pubsub_config = self.context.config.get("pubsub_config", {})
+        if not channel_name:
+            first_channel_name = pubsub_config.get("channel_name", self.agent_name or "default")
+        
+        
+            
+        # Get Redis configuration
+        redis_config = pubsub_config.get("redis", {})
+        channel_prefix = redis_config.get("channel_prefix")
+        channel_name = f"{channel_prefix}{first_channel_name}"
+        try:
+            # Get PubSub manager
+            pubsub_manager = get_pubsub_manager(
+                use_redis=True,
+                redis_config=redis_config
+            )
+            
+            # Get or create channel
+            channel = pubsub_manager.get_or_create_channel(channel_name)
+            return channel, channel_name
+        except Exception as e:
+            logger.error(f"Error getting PubSub channel: {str(e)}")
+            return None, None
+            
+    async def _handle_tool_confirmation(
+        self, 
+        server_name: str, 
+        tool_name: str, 
+        arguments: Optional[Dict[str, Any]], 
+        timeout_ms: int = 120000, 
+        default_action: str = "reject"
+    ) -> bool:
+        """
+        Handle tool call confirmation with timeout.
+        
+        Publishes a confirmation request to the agent's channel and waits for a response.
+        If a timeout occurs, uses the default action.
+        
+        Args:
+            server_name: Server name for the tool
+            tool_name: Name of the tool being called
+            arguments: Arguments to the tool call
+            timeout_ms: Timeout in milliseconds
+            default_action: Default action ("confirm" or "reject") if timeout occurs
+            
+        Returns:
+            True if confirmed, False if rejected
+        """
+        # Get PubSub channel
+        channel, channel_name = await self._get_pubsub_channel()
+        
+        # If PubSub not available, use default action
+        if not channel:
+            logger.info(
+                f"PubSub not available for tool confirmation. Using default action: {default_action}",
+                data={
+                    "progress_action": ProgressAction.WAITING_FOR_CONFIRMATION,
+                    "tool_name": tool_name,
+                    "server_name": server_name,
+                    "agent_name": self.agent_name,
+                    "default_action": default_action,
+                },
+            )
+            return (default_action.lower() == "confirm")
+            
+        # Generate unique request ID
+        request_id = f"{server_name}_{tool_name}_{id(arguments)}"
+        
+        # Create confirmation future
+        confirmation_future = asyncio.Future()
+        
+        # Log confirmation request
+        logger.info(
+            f"Tool call requires confirmation. Waiting on channel: {channel_name}",
+            data={
+                "progress_action": ProgressAction.WAITING_FOR_CONFIRMATION,
+                "tool_name": tool_name,
+                "server_name": server_name,
+                "agent_name": self.agent_name,
+                "timeout_ms": timeout_ms,
+                "channel": channel_name,
+                "request_id": request_id,
+            },
+        )
+        
+        # Create response handler
+        async def handle_confirmation(message):
+            if not isinstance(message, dict):
+                return
+                
+            if (message.get("type") == "tool_confirmation_response" and
+                message.get("request_id") == request_id):
+                if not confirmation_future.done():
+                    confirmation_future.set_result(message.get("confirmed", False))
+                    
+        # Subscribe to channel
+        channel.subscribe_async(handle_confirmation)
+        
+        try:
+            # Create and publish confirmation request
+            confirmation_request = {
+                "type": "tool_confirmation_request",
+                "request_id": request_id,
+                "server_name": server_name,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "timestamp": asyncio.get_event_loop().time(),
+                "timeout_ms": timeout_ms,
+                "agent_name": self.agent_name
+            }
+            
+            # Publish request
+            await channel.publish(confirmation_request)
+            
+            try:
+                # Wait for response with timeout
+                confirmed = await asyncio.wait_for(
+                    confirmation_future, 
+                    timeout=timeout_ms/1000
+                )
+                
+                # Log result
+                logger.info(
+                    f"Tool call {'confirmed' if confirmed else 'rejected'} by user",
+                    data={
+                        "progress_action": ProgressAction.CONFIRMATION_RECEIVED,
+                        "tool_name": tool_name,
+                        "server_name": server_name,
+                        "agent_name": self.agent_name,
+                        "confirmed": confirmed,
+                    },
+                )
+                
+                return confirmed
+                
+            except asyncio.TimeoutError:
+                # Handle timeout
+                confirmed = (default_action.lower() == "confirm")
+                
+                logger.info(
+                    f"Tool confirmation timeout. Using default: {default_action}",
+                    data={
+                        "progress_action": ProgressAction.CONFIRMATION_TIMEOUT,
+                        "tool_name": tool_name,
+                        "server_name": server_name,
+                        "agent_name": self.agent_name,
+                        "confirmed": confirmed,
+                    },
+                )
+                
+                return confirmed
+                
+        except Exception as e:
+            # Handle errors
+            logger.error(
+                f"Error in tool confirmation: {str(e)}",
+                data={
+                    "progress_action": ProgressAction.FATAL_ERROR,
+                    "tool_name": tool_name,
+                    "server_name": server_name,
+                    "agent_name": self.agent_name,
+                    "error": str(e),
+                },
+            )
+            return (default_action.lower() == "confirm")
+            
+        finally:
+            # Clean up subscription
+            try:
+                channel.unsubscribe_async(handle_confirmation)
+            except Exception:
+                pass
 
     def __init__(
         self,
@@ -521,11 +749,12 @@ class MCPAggregator(ContextDependent):
     async def call_tool(self, name: str, arguments: dict | None = None) -> CallToolResult:
         """
         Call a namespaced tool, e.g., 'server_name-tool_name'.
+        Supports tool confirmation based on server configuration.
         """
         if not self.initialized:
             await self.load_servers()
 
-        # Use the common parser to get server and tool name
+        # Parse tool name to get server and local tool name
         server_name, local_tool_name = await self._parse_resource_name(name, "tool")
 
         if server_name is None:
@@ -544,7 +773,35 @@ class MCPAggregator(ContextDependent):
                 "agent_name": self.agent_name,
             },
         )
+        
+        # Check for tool confirmation config
+        tool_config = self._get_tool_config(server_name, local_tool_name)
+        if tool_config and tool_config.get("seek_confirm", False):
+            # Tool requires confirmation
+            confirmation_result = await self._handle_tool_confirmation(
+                server_name, 
+                local_tool_name, 
+                arguments,
+                tool_config.get("time_to_confirm", 120000),
+                tool_config.get("default", "reject")
+            )
+            
+            if not confirmation_result:
+                logger.info(
+                    f"Tool call rejected for {server_name}/{local_tool_name}",
+                    data={
+                        "progress_action": ProgressAction.TOOL_CALL_REJECTED,
+                        "tool_name": local_tool_name,
+                        "server_name": server_name,
+                        "agent_name": self.agent_name,
+                    },
+                )
+                return CallToolResult(
+                    isError=True,
+                    content=[TextContent(type="text", text=f"Tool call to '{local_tool_name}' was rejected")],
+                )
 
+        # Execute the tool call
         tracer = trace.get_tracer(__name__)
         with tracer.start_as_current_span(f"MCP Tool: {server_name}/{local_tool_name}"):
             trace.get_current_span().set_attribute("tool_name", local_tool_name)

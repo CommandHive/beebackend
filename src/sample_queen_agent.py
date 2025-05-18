@@ -29,7 +29,10 @@ sample_json_config = {
                 "tool_calls":[
                     {
                         "name": "fetch-fetch",
-                        "seek_confirm": True
+                        "seek_confirm": True,
+                        "time_to_confirm": 120000, #2 minutes 
+                        "default": "confirm" #if the time expires then what to do. 
+
                     }
                 ]
             }
