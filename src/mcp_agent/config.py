@@ -47,6 +47,24 @@ class MCPRootSettings(BaseModel):
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
 
+class MCPToolCallConfig(BaseModel):
+    """Configuration for a tool call requiring confirmation."""
+    
+    name: str
+    """The name of the tool."""
+    
+    seek_confirm: bool = False
+    """Whether to seek confirmation before executing the tool."""
+    
+    time_to_confirm: int = 120000
+    """Timeout in milliseconds for the confirmation (default: 2 minutes)."""
+    
+    default: Literal["confirm", "reject"] = "reject"
+    """Default action when timeout occurs."""
+    
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+
+
 class MCPServerSettings(BaseModel):
     """
     Represents the configuration for an individual server.
@@ -95,6 +113,9 @@ class MCPServerSettings(BaseModel):
 
     cwd: str | None = None
     """Working directory for the executed server command."""
+    
+    tool_calls: Optional[List[MCPToolCallConfig]] = None
+    """Configuration for tool calls that require confirmation."""
 
 
 class MCPSettings(BaseModel):

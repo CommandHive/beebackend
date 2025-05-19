@@ -28,11 +28,10 @@ sample_json_config = {
                 "args": ["mcp-server-fetch"],
                 "tool_calls":[
                     {
-                        "name": "fetch-fetch",
+                        "name": "fetch",
                         "seek_confirm": True,
                         "time_to_confirm": 120000, #2 minutes 
-                        "default": "confirm" #if the time expires then what to do. 
-
+                        "default": "reject" #if the time expires then what to do. 
                     }
                 ]
             }

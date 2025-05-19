@@ -1,1 +1,1 @@
-from . import health, users, mcp
+from . import health, users, mcp, agents
