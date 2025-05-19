@@ -1,4 +1,5 @@
-from asyncio import Lock, gather, create_task, wait_for, TimeoutError
+import asyncio
+from asyncio import Lock, gather, create_task, wait_for, TimeoutError, sleep
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -108,18 +109,24 @@ class MCPAggregator(ContextDependent):
         """
         if not hasattr(self.context, "config") or not hasattr(self.context.config, "mcp"):
             return None
-            
-        mcp_config = self.context.config.mcp
+        
+        
+        
+        logger.info("Server Name being Called",  data={"server_name": server_name})
+        logger.info(
+                "Get Settings from self.context.config",
+                data=self.context.config.mcp.servers
+            ) 
+        mcp_config = self.context.config.mcp.servers
         
         # Get server configuration
-        servers_config = getattr(mcp_config, "servers", {})
-        if not servers_config:
-            return None
-            
-        # Get specific server config
-        server_config = getattr(servers_config, server_name, None)
-        if not server_config:
-            return None
+        server_config = mcp_config.get(server_name)
+
+        
+        logger.info("Get Server Config", data={
+            "server_name": server_name,
+            "server_config": server_config
+        })
             
         # Look for tool_calls configuration
         tool_calls = getattr(server_config, "tool_calls", [])
@@ -144,20 +151,20 @@ class MCPAggregator(ContextDependent):
             Tuple of (channel, channel_name) or (None, None) if PubSub not available
         """
         # Check if PubSub is enabled
-        if not hasattr(self.context, "config") or not self.context.config.get("pubsub_enabled", False):
+        if not hasattr(self.context, "config") or not getattr(self.context.config, "pubsub_enabled", False):
             return None, None
             
         
         # Get configuration
-        pubsub_config = self.context.config.get("pubsub_config", {})
+        pubsub_config = getattr(self.context.config, "pubsub_config", {})
         if not channel_name:
-            first_channel_name = pubsub_config.get("channel_name", self.agent_name or "default")
+            first_channel_name = getattr(pubsub_config, "channel_name", self.agent_name or "default")
         
         
             
         # Get Redis configuration
-        redis_config = pubsub_config.get("redis", {})
-        channel_prefix = redis_config.get("channel_prefix")
+        redis_config = getattr(pubsub_config, "redis", {})
+        channel_prefix = getattr(redis_config, "channel_prefix", None)
         channel_name = f"{channel_prefix}{first_channel_name}"
         try:
             # Get PubSub manager
@@ -199,7 +206,6 @@ class MCPAggregator(ContextDependent):
         """
         # Get PubSub channel
         channel, channel_name = await self._get_pubsub_channel()
-        
         # If PubSub not available, use default action
         if not channel:
             logger.info(
@@ -212,6 +218,7 @@ class MCPAggregator(ContextDependent):
                     "default_action": default_action,
                 },
             )
+            
             return (default_action.lower() == "confirm")
             
         # Generate unique request ID
@@ -774,17 +781,28 @@ class MCPAggregator(ContextDependent):
             },
         )
         
+        
         # Check for tool confirmation config
         tool_config = self._get_tool_config(server_name, local_tool_name)
-        if tool_config and tool_config.get("seek_confirm", False):
+        logger.info("MCP Server Tool Config", data=tool_config)
+        logger.info("Hello World?")
+        seek = getattr(tool_config, "seek_confirm", None)
+
+        logger.info("seek_confirm flag:", data={"seek_confirm": seek})
+
+        # {'type': 'message', 'pattern': None, 'channel': b'agent:queen', 'data': b'{"timestamp": "2025-05-19T11:08:43.824995", "type": "info", "name": null, "namespace": "mcp_agent.mcp.mcp_aggregator.default", "message": "MCP Server Tool Config", "data": {"data": {"name": "fetch", "seek_confirm": true, "time_to_confirm": 120000, "default": "reject"}}, "trace_id": null, "span_id": null, "context": null}'}
+
+        if tool_config and seek:
             # Tool requires confirmation
+            logger.info("Entered the IF statement!")
             confirmation_result = await self._handle_tool_confirmation(
                 server_name, 
                 local_tool_name, 
                 arguments,
-                tool_config.get("time_to_confirm", 120000),
-                tool_config.get("default", "reject")
+                getattr(tool_config, "time_to_confirm", 120000),
+                getattr(tool_config, "default", "reject")
             )
+
             
             if not confirmation_result:
                 logger.info(
