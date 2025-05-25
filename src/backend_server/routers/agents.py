@@ -1,10 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import anthropic
-from typing import Optional
+from typing import Optional, Dict, List, Any
 import json
 import re
+import redis.asyncio as aioredis
+import asyncio
+import os
 from dotenv import load_dotenv
+from mcp_agent.core.fastagent import FastAgent
 load_dotenv()
 
 router = APIRouter(
@@ -12,6 +16,9 @@ router = APIRouter(
     tags=["agents"],
     responses={404: {"description": "Not found"}},
 )
+
+# Running agents tracker
+running_agents = {}
 
 
 class LLMRequest(BaseModel):
